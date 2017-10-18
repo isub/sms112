@@ -2,6 +2,7 @@
 #include "sms112_curl.h"
 #include "sms112_json.h"
 #include "sms112_sip.h"
+#include "sms112_sig.h"
 
 #include <errno.h>
 #include <string.h>
@@ -19,13 +20,13 @@ CLog g_coLog;
 int main( int p_iArgC, char *p_mpszArgV[ ] )
 {
   int iRetVal = 0;
-  int iSMPPSock;
   int iFnRes;
   pthread_t tThreadPing;
   pthread_t tThreadRecvr;
   const char *pszConfFile = NULL;
 
-  if ( 2 == p_iArgC) {
+  /* если при вызове были переданы аргументы */
+  if ( 2 == p_iArgC ) {
     pszConfFile = p_mpszArgV[ 1 ];
   } else {
     pszConfFile = "/usr/local/etc/sms112/sms112.conf";
@@ -35,83 +36,80 @@ int main( int p_iArgC, char *p_mpszArgV[ ] )
   iFnRes = sms112_load_conf( pszConfFile );
   if ( 0 == iFnRes ) {
   } else {
-    return iRetVal;
+    return iFnRes;
   }
 
   /* инициализация логгера */
   iFnRes = g_coLog.Init( g_psoConf->m_pszLogFileMask );
   if ( 0 == iFnRes ) {
   } else {
-    return iRetVal;
+    return iFnRes;
   }
+
+  UTL_LOG_N( g_coLog, "/********************************************************************\\" );
 
   iFnRes = sms112_curl_init();
   if ( 0 == iFnRes ) {
   } else {
-    return iRetVal;
+    goto exit;
   }
 
   iFnRes = sms112_sip_init();
   if ( 0 == iFnRes ) {
   } else {
-    return iRetVal;
+    goto cleanup_curl;
   }
 
   iFnRes = sms112_reg_sig();
   if ( 0 == iFnRes ) {
-    UTL_LOG_N( g_coLog, "register signal handler: ok" );
   } else {
-    UTL_LOG_E( g_coLog, "register signal handler: failed!!! error code: %d", iFnRes );
+    goto cleanup_sip;
   }
 
-  iFnRes = sms112_tcp_connect(iSMPPSock);
-  if(0 == iFnRes) {
-    UTL_LOG_N( g_coLog, "establish tcp-connection to SMPP-server: ok" );
+  iFnRes = sms112_tcp_connect();
+  if ( 0 == iFnRes ) {
   } else {
-    UTL_LOG_N( g_coLog, "establish tcp-connection to SMPP-server: failed!!! error code: %d", iFnRes );
-    return iRetVal;
+    goto cleanup_sip;
   }
 
-  iFnRes = pthread_create(&tThreadRecvr, NULL, msg_receiver, &iSMPPSock);
-  if(0 == iFnRes) {
+  iFnRes = pthread_create( &tThreadRecvr, NULL, msg_receiver, NULL );
+  if ( 0 == iFnRes ) {
     UTL_LOG_N( g_coLog, "create smpp listener thread: ok" );
   } else {
     UTL_LOG_E( g_coLog, "create smpp listener thread: failed!!! error code: %d", iFnRes );
+    goto disconnect_tcp;
   }
 
-  iFnRes = sms112_smpp_connect( iSMPPSock );
+  iFnRes = sms112_smpp_connect();
   if ( 0 == iFnRes ) {
-    UTL_LOG_N( g_coLog, "establish SMPP connection: ok" );
   } else {
-    UTL_LOG_E( g_coLog, "establish SMPP connection: failed!!! error code: %d", iFnRes );
     iRetVal = iFnRes;
-    goto cleanup_and_exit;
+    goto disconnect_tcp;
   }
 
-  iFnRes = pthread_create(&tThreadPing, NULL, do_smpp_ping, &iSMPPSock);
+  iFnRes = pthread_create( &tThreadPing, NULL, do_smpp_ping, NULL );
   if ( 0 == iFnRes ) {
     UTL_LOG_N( g_coLog, "create ENQUIRE_LINK thread: ok" );
     pthread_join( tThreadPing, NULL );
   } else {
     UTL_LOG_N( g_coLog, "create ENQUIRE_LINK thread: failed!!! error code: %d", iFnRes );
+    goto disconnect_smpp;
   }
 
-  disconnect_and_clean:
-  iFnRes = sms112_smpp_disconn(iSMPPSock);
-  if(0 == iFnRes) {
-    UTL_LOG_N( g_coLog, "close SMPP connection: ok");
-  } else {
-    UTL_LOG_E( g_coLog, "close SMPP connection: failed!!! error code: %d", iFnRes );
-    iRetVal = iFnRes;
-    goto cleanup_and_exit;
-  }
+  disconnect_smpp:
+  sms112_smpp_disconn();
 
-  cleanup_and_exit:
-  sms112_tcp_disconn(iSMPPSock);
+  disconnect_tcp:
+  sms112_tcp_disconn();
 
+  cleanup_sip:
   sms112_sip_fini();
 
+  cleanup_curl:
   sms112_curl_fini();
+
+  exit:
+  UTL_LOG_N( g_coLog, "\\********************************************************************/" );
 
   g_coLog.Flush();
 
@@ -248,9 +246,9 @@ int sms112_load_conf( const char *p_pszConf )
     return EINVAL;
   }
 
-  iFnRes = coConf.GetParamValue( "SIPUsrAgn", strParamValue );
+  iFnRes = coConf.GetParamValue( "SIPTo", strParamValue );
   if ( 0 == iFnRes ) {
-    g_soConf.m_pszSIPUsrAgn = strdup( strParamValue.c_str() );
+    g_soConf.m_pszSIPTo = strdup( strParamValue.c_str() );
   } else {
     return EINVAL;
   }
@@ -262,9 +260,16 @@ int sms112_load_conf( const char *p_pszConf )
     return EINVAL;
   }
 
-  iFnRes = coConf.GetParamValue( "LocalSIPAddr", strParamValue );
+  iFnRes = coConf.GetParamValue( "SIPLocalAddr", strParamValue );
   if ( 0 == iFnRes ) {
-    g_soConf.m_pszLocalSIPAddr = strdup( strParamValue.c_str() );
+    g_soConf.m_pszSIPLocalAddr = strdup( strParamValue.c_str() );
+  } else {
+    return EINVAL;
+  }
+
+  iFnRes = coConf.GetParamValue( "SIPLocalPort", strParamValue );
+  if ( 0 == iFnRes ) {
+    g_soConf.m_usSIPLocalPort = static_cast<uint16_t>( std::stoul( strParamValue ) );
   } else {
     return EINVAL;
   }
@@ -293,6 +298,41 @@ int sms112_load_conf( const char *p_pszConf )
   iFnRes = coConf.GetParamValue( "LogFileMask", strParamValue );
   if ( 0 == iFnRes ) {
     g_soConf.m_pszLogFileMask = strdup( strParamValue.c_str() );
+  } else {
+    return EINVAL;
+  }
+
+  iFnRes = coConf.GetParamValue( "SIPAuthRealm", strParamValue );
+  if ( 0 == iFnRes ) {
+    g_soConf.m_pszSIPAuthRealm = strdup( strParamValue.c_str() );
+  } else {
+    return EINVAL;
+  }
+
+  iFnRes = coConf.GetParamValue( "SIPAuthScheme", strParamValue );
+  if ( 0 == iFnRes ) {
+    g_soConf.m_pszSIPAuthScheme = strdup( strParamValue.c_str() );
+  } else {
+    return EINVAL;
+  }
+
+  iFnRes = coConf.GetParamValue( "SIPAuthUserName", strParamValue );
+  if ( 0 == iFnRes ) {
+    g_soConf.m_pszSIPAuthUserName = strdup( strParamValue.c_str() );
+  } else {
+    return EINVAL;
+  }
+
+  iFnRes = coConf.GetParamValue( "SIPAuthPassword", strParamValue );
+  if ( 0 == iFnRes ) {
+    g_soConf.m_pszSIPAuthPassword = strdup( strParamValue.c_str() );
+  } else {
+    return EINVAL;
+  }
+
+  iFnRes = coConf.GetParamValue( "SIPTimeout", strParamValue );
+  if ( 0 == iFnRes ) {
+    g_soConf.m_uiSIPTimeout = static_cast<uint32_t>( std::stoul( strParamValue ) );
   } else {
     return EINVAL;
   }

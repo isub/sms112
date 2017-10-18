@@ -18,13 +18,19 @@ struct SConf {
   const char *m_pszReportURL;
   const char *m_pszSIPSrvAdr;
   uint16_t    m_usSIPSrvPort;
-  const char *m_pszSIPUsrAgn;
+  const char *m_pszSIPTo;
   const char *m_pszBoundary;
-  const char *m_pszLocalSIPAddr;
+  const char *m_pszSIPLocalAddr;
+  uint16_t    m_usSIPLocalPort;
   const char *m_pszVisitedNetworkID;
   const char *m_pszGeolocationCId;
   const char *m_pszGeolocationURLTemplate;
   const char *m_pszLogFileMask;
+  const char *m_pszSIPAuthRealm;
+  const char *m_pszSIPAuthScheme;
+  const char *m_pszSIPAuthUserName;
+  const char *m_pszSIPAuthPassword;
+  uint32_t    m_uiSIPTimeout;
 };
 
 extern SConf *g_psoConf;
@@ -35,15 +41,15 @@ int sms112_load_conf( const char *p_pszConf );
 
 /* операции по протоколу tcp */
 /* подключение к серверу по протоколу tcp */
-int sms112_tcp_connect( int &p_iSock );
+int sms112_tcp_connect();
 /* завершение сессии tcp */
-void sms112_tcp_disconn( int &p_iSock );
+void sms112_tcp_disconn();
 /* функция отправки данных */
-int sms112_tcp_send( int p_iSock, uint8_t *p_pBuf, uint32_t p_uiDataSize );
+int sms112_tcp_send( uint8_t *p_pBuf, uint32_t p_uiDataSize );
 /* функция получения данных */
-int sms112_tcp_recv( int p_iSock, uint8_t *p_pBuf, uint32_t p_uiDataSize );
+int sms112_tcp_recv( uint8_t *p_pBuf, uint32_t p_uiDataSize );
 /* функция считывает данные из буфера не убирая их оттуда */
-int sms112_tcp_peek( int p_iSock, uint8_t *p_pBuf, uint32_t p_uiDataSize );
+int sms112_tcp_peek( uint8_t *p_pBuf, uint32_t p_uiDataSize );
 
 /* хранение и обработка активных запросов */
 /* функция добавления запроса в хранилище */
@@ -62,23 +68,27 @@ int sms112_req_stor_get_and_rem( uint32_t p_uiSeqNum, SReqData *&p_psoReqData );
 /* функция потока, предназначенного для получения сообщений от сервера */
 void * msg_receiver( void *p_vParam );
 /* функция отправки smpp-сообщений */
-int sms112_smpp_send( int p_iSock, uint8_t *p_pmBuf, int p_iDataLen, uint32_t p_uiSeqNum, SReqData &p_soReqData );
+int sms112_smpp_send( uint8_t *p_pmBuf, int p_iDataLen, uint32_t p_uiSeqNum, SReqData &p_soReqData );
 
 /* формирование команд smpp */
 /* генерация sequence_number */
 uint32_t sms112_smpp_get_seq_num();
 /* функция открытия snmp-сессии */
-int sms112_smpp_connect( int p_iSock );
+int sms112_smpp_connect();
 /* функция закрытия snmp-сессии */
-int sms112_smpp_disconn( int p_iSock );
+int sms112_smpp_disconn();
 /* функция формирования запроса проверки smpp-сессии */
-int sms112_smpp_enq_link( int p_iSock );
+int sms112_smpp_enq_link();
 /* функция обработки входящих сообщений */
-int sms112_smpp_handler( int p_iSock );
+int sms112_smpp_handler();
 /* функция обработки запроса DELIVER_SM */
 int sms112_smpp_deliver_sm_oper( uint8_t *p_puiBuf, int &p_iDataLen, size_t p_stBufSize, uint8_t p_uiSeqNum );
+/* функция обработки запроса UNBIND */
+int sms112_smpp_unbind_oper( uint8_t *p_puiBuf, int &p_iDataLen, size_t p_stBufSize, uint8_t p_uiSeqNum );
 /* функция вывода отладночной информации */
 void sms112_smpp_dump_buf( uint8_t *p_puiBuf, uint32_t p_uiDataSize, const char *p_pszTitle );
+
+void stop_smpp_receiver_thread();
 
 /* вспомогательные потоки */
 /* функция регистрации обработчика сигналов */

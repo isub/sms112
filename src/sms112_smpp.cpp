@@ -1,4 +1,9 @@
 #include "sms112.h"
+#include "sms112_smpp.h"
+
+#include <string.h>
+
+static volatile bool g_bIsConnected;
 
 extern "C" {
 #include "smpp34.h"
@@ -12,32 +17,49 @@ extern "C" {
 
 static volatile uint32_t g_uiSecNum;
 
-int sms112_smpp_send( int p_iSock, uint8_t *p_pmBuf, int p_iDataLen, uint32_t p_uiSeqNum, SReqData &p_soReqData )
+int sms112_smpp_send( uint8_t *p_pmBuf, int p_iDataLen, uint32_t p_uiSeqNum, SReqData &p_soReqData )
 {
+  int iRetVal = 0;
   int iFnRes;
 
   iFnRes = sms112_req_stor_add( p_uiSeqNum, p_soReqData );
   if ( 0 == iFnRes ) {
   } else {
-    return iFnRes;
+    iRetVal = iFnRes;
+    goto exit;
   }
 
-  iFnRes = sms112_tcp_send( p_iSock, p_pmBuf, p_iDataLen );
+  iFnRes = sms112_tcp_send( p_pmBuf, p_iDataLen );
   if ( 0 == iFnRes ) {
   } else {
-    return iFnRes;
+    iRetVal = iFnRes;
+    goto exit;
   }
 
   timespec soTS;
 
   sms112_make_timespec_timeout( soTS, 1, 0 );
 
-  pthread_mutex_timedlock( &p_soReqData.m_mutexWaitResp, &soTS );
+  iFnRes = pthread_mutex_timedlock( &p_soReqData.m_mutexWaitResp, &soTS );
   if ( p_soReqData.m_iDataLen != 0 ) {
-    return 0;
   } else {
-    return -1;
+    if ( ETIMEDOUT == iFnRes ) {
+      iRetVal = ETIMEDOUT;
+      goto exit;
+    } else {
+      iRetVal = iFnRes;
+      goto exit;
+    }
   }
+
+  exit:
+  if ( 0 == iRetVal ) {
+    UTL_LOG_D( g_coLog, "sms112_smpp_send: ok" );
+  } else {
+    UTL_LOG_E( g_coLog, "sms112_smpp_send: failed!!! error code: %d; descr: %s", iFnRes, strerror( iFnRes ) );
+  }
+
+  return iRetVal;
 }
 
 struct SPDUHdr {
@@ -47,7 +69,7 @@ struct SPDUHdr {
   uint32_t sequence_number;
 };
 
-int sms112_oper_resp( SPDUHdr &p_soHdr, int p_iSock )
+int sms112_oper_resp( SPDUHdr &p_soHdr )
 {
   int iRetVal = 0;
   int iFnRes;
@@ -58,7 +80,7 @@ int sms112_oper_resp( SPDUHdr &p_soHdr, int p_iSock )
     /* выдел¤ем пам¤ть дл¤ хранени¤ запроса */
     psoReqData->m_pBuf = reinterpret_cast<uint8_t*>( malloc( p_soHdr.command_length ) );
 
-    iFnRes = sms112_tcp_recv( p_iSock, psoReqData->m_pBuf, p_soHdr.command_length );
+    iFnRes = sms112_tcp_recv( psoReqData->m_pBuf, p_soHdr.command_length );
     if ( 0 == iFnRes ) {
       psoReqData->m_iDataLen = p_soHdr.command_length;
     } else {
@@ -72,7 +94,7 @@ int sms112_oper_resp( SPDUHdr &p_soHdr, int p_iSock )
   return iRetVal;
 }
 
-int sms112_smpp_oper_req( SPDUHdr &p_soHdr, int p_iSock )
+int sms112_smpp_oper_req( SPDUHdr &p_soHdr )
 {
   int iRetVal = 0;
   int iFnRes;
@@ -82,7 +104,7 @@ int sms112_smpp_oper_req( SPDUHdr &p_soHdr, int p_iSock )
   if ( p_soHdr.command_length > sizeof( muiLocalBuffer ) ) {
     return EINVAL;
   }
-  iFnRes = sms112_tcp_recv( p_iSock, muiLocalBuffer, p_soHdr.command_length );
+  iFnRes = sms112_tcp_recv( muiLocalBuffer, p_soHdr.command_length );
   if ( 0 == iFnRes ) {
   } else {
     return EINVAL;
@@ -93,33 +115,26 @@ int sms112_smpp_oper_req( SPDUHdr &p_soHdr, int p_iSock )
       iDataLen = p_soHdr.command_length;
       iFnRes = sms112_smpp_deliver_sm_oper( muiLocalBuffer, iDataLen, sizeof(muiLocalBuffer), p_soHdr.sequence_number );
       break; /* DELIVER_SM */
+    case UNBIND:
+      iDataLen = p_soHdr.command_length;
+      iFnRes = sms112_smpp_unbind_oper( muiLocalBuffer, iDataLen, sizeof( muiLocalBuffer ), p_soHdr.sequence_number );
+      break; /* UNBIND */
     default:
       iFnRes = -1;
       break;
   }
 
-  if ( 0 == iFnRes ) {
-  } else {
-    return -1;
-  }
-
-  iFnRes = sms112_tcp_send( p_iSock, muiLocalBuffer, iDataLen );
-  if ( iFnRes == 0 ) {
-  } else {
-    return -1;
-  };
-
   return iRetVal;
 }
 
-int sms112_smpp_handler( int p_iSock )
+int sms112_smpp_handler()
 {
   int iRetVal = 0;
   SPDUHdr soHdr;
   int iFnRes;
 
   /* получаем ответ */
-  iFnRes = sms112_tcp_peek( p_iSock, reinterpret_cast<uint8_t*>(&soHdr), sizeof( soHdr ) );
+  iFnRes = sms112_tcp_peek( reinterpret_cast<uint8_t*>(&soHdr), sizeof( soHdr ) );
   if ( 0 == iFnRes ) {
   } else {
     return -1;
@@ -130,10 +145,10 @@ int sms112_smpp_handler( int p_iSock )
 
   if ( 0x80000000 & soHdr.command_id ) {
     /* ответ */
-    iRetVal = sms112_oper_resp( soHdr, p_iSock );
+    iRetVal = sms112_oper_resp( soHdr );
   } else {
     /* запрос */
-    iRetVal = sms112_smpp_oper_req( soHdr, p_iSock );
+    iRetVal = sms112_smpp_oper_req( soHdr );
   }
 
   return iRetVal;
@@ -155,3 +170,15 @@ void sms112_smpp_dump_buf( uint8_t *p_puiBuf, uint32_t p_uiDataSize, const char 
 #else
 void sms112_smpp_dump_buf( uint8_t *p_puiBuf, uint32_t p_uiDataSize, const char *p_pszTitle ) { }
 #endif
+
+void sms112_smpp_set_connected( bool p_bIsConnected )
+{
+  g_bIsConnected = p_bIsConnected;
+}
+
+bool sms112_smpp_is_connected()
+{
+  UTL_LOG_D( g_coLog, "smpp status: %s", g_bIsConnected ? "connected" : "disconnected" );
+
+  return g_bIsConnected;
+}

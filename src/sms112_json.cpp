@@ -35,6 +35,7 @@ void sms112_make_json( const char *p_mpszParam[], int p_iParamCnt, const SParamD
 
   p_strOut = '{';
   for ( int i = 0; i < p_iDescCnt && i < p_iParamCnt; ++i ) {
+    strAttrValue.clear();
     if ( 0 == iFirst ) {
       p_strOut += ',';
     } else {
@@ -46,9 +47,11 @@ void sms112_make_json( const char *p_mpszParam[], int p_iParamCnt, const SParamD
     if ( 0 != p_msoParamDesc[ i ].m_iType ) {
       p_strOut += '"';
     }
-    strAttrValue = p_mpszParam[ i ];
-    sms112_escape_spec_sym( strAttrValue );
-    p_strOut += strAttrValue;
+    if ( NULL != p_mpszParam[ i ] ) {
+      strAttrValue = p_mpszParam[ i ];
+      sms112_escape_spec_sym( strAttrValue );
+      p_strOut += strAttrValue;
+    }
     if ( 0 != p_msoParamDesc[ i ].m_iType ) {
       p_strOut += '"';
     }
