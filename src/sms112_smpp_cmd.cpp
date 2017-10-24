@@ -256,8 +256,7 @@ int sms112_smpp_deliver_sm_oper( uint8_t *p_puiBuf, int &p_iDataLen, size_t p_st
         tlv = tlv->next;
       }
       if ( NULL == tlv ) {
-        iRetVal = EINVAL;
-        goto cleanup_and_exit;
+        pszField = "no data specified";
       }
     }
 
@@ -281,6 +280,7 @@ int sms112_smpp_deliver_sm_oper( uint8_t *p_puiBuf, int &p_iDataLen, size_t p_st
 #endif
         break;
       default:
+        UTL_LOG_E( g_coLog, "unsupported data coding: %d", req.data_coding );
         iRetVal = EINVAL;
         goto cleanup_and_exit;
     }

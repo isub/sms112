@@ -82,9 +82,7 @@ int sms112_tcp_send( uint8_t *p_pBuf, uint32_t p_uiDataSize )
 #endif
   } else {
     iRetVal = errno;
-    if ( ECONNRESET == iRetVal ) {
-      sms112_tcp_set_connected( false );
-    }
+    sms112_tcp_set_connected( false );
     UTL_LOG_E( g_coLog, "sms112_tcp_send: failed!!! error code: %u; descr: %s", iRetVal, strerror( iRetVal ) );
   }
 
