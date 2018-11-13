@@ -305,29 +305,21 @@ int sms112_load_conf( const char *p_pszConf )
   iFnRes = coConf.GetParamValue( "SIPAuthRealm", strParamValue );
   if ( 0 == iFnRes ) {
     g_soConf.m_pszSIPAuthRealm = strdup( strParamValue.c_str() );
-  } else {
-    return EINVAL;
   }
 
   iFnRes = coConf.GetParamValue( "SIPAuthScheme", strParamValue );
   if ( 0 == iFnRes ) {
     g_soConf.m_pszSIPAuthScheme = strdup( strParamValue.c_str() );
-  } else {
-    return EINVAL;
   }
 
   iFnRes = coConf.GetParamValue( "SIPAuthUserName", strParamValue );
   if ( 0 == iFnRes ) {
     g_soConf.m_pszSIPAuthUserName = strdup( strParamValue.c_str() );
-  } else {
-    return EINVAL;
   }
 
   iFnRes = coConf.GetParamValue( "SIPAuthPassword", strParamValue );
   if ( 0 == iFnRes ) {
     g_soConf.m_pszSIPAuthPassword = strdup( strParamValue.c_str() );
-  } else {
-    return EINVAL;
   }
 
   iFnRes = coConf.GetParamValue( "SIPTimeout", strParamValue );

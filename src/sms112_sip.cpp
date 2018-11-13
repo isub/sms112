@@ -23,12 +23,15 @@ static pjsip_user_agent   *g_psoUserAgent;
 static pj_thread_t        *g_threadHandler;
 
 static int worker_thread( void *arg );
+static pj_bool_t on_rx_request( pjsip_rx_data *p_psoRxData );
 static pj_bool_t on_rx_response( pjsip_rx_data *p_psoRxData );
 static void on_tsx_state( pjsip_transaction *p_pTrans, pjsip_event *p_pEvent );
 static int init_auth();
 static void sip_make_body( pj_str_t *p_strBody, const char *p_pszText, const char *p_pszGeoData );
 static void send_request( pjsip_dialog *p_psoDialog, const pjsip_method *p_pMethod, const char *p_pszCaller, const char *p_pszText, const char* p_pszGeodata );
 static void send_ack( pjsip_dialog *p_psoDialog, pjsip_rx_data *p_psoRxData );
+static void send_bye( pjsip_dialog *p_psoDialog, pjsip_rx_data *p_psoRxData );
+static void send_resp( pjsip_dialog *p_psoDialog, pjsip_rx_data *p_psoRxData, int p_iStatus, const char *p_pszStatus );
 
 struct SSync {
   pthread_mutex_t *m_ptMutex;
@@ -50,7 +53,7 @@ static pjsip_module g_soModApp = {
   NULL,                                  /* start()          */
   NULL,                                  /* stop()           */
   NULL,                                  /* unload()         */
-  NULL,                                  /* on_rx_request()  */
+  &on_rx_request,                        /* on_rx_request()  */
   &on_rx_response,                       /* on_rx_response() */
   NULL,                                  /* on_tx_request.   */
   NULL,                                  /* on_tx_response() */
@@ -142,7 +145,7 @@ static int worker_thread( void *arg )
   return 0;
 }
 
-static pj_bool_t on_rx_response( pjsip_rx_data *p_psoRxData )
+static pj_bool_t on_rx_request( pjsip_rx_data *p_psoRxData )
 {
   pj_bool_t bRetVal = PJ_FALSE;
   pjsip_dialog *psoDialog;
@@ -163,14 +166,6 @@ static pj_bool_t on_rx_response( pjsip_rx_data *p_psoRxData )
     switch ( eSIPMethod ) {
       case PJSIP_INVITE_METHOD:
         UTL_LOG_D( g_coLog, "PJSIP_INVITE_METHOD" );
-        if ( iStatusCode / 100 == 2 ) {
-          send_ack( psoDialog, p_psoRxData );
-          sync_ulck( &psoDialog->call_id->id, 0 );
-          bRetVal = PJ_TRUE;
-        } else if ( 401 == iStatusCode || 407 == iStatusCode ) {
-        } else if ( 300 <= iStatusCode ) {
-          pjsip_dlg_dec_session( psoDialog, &g_soModApp );
-        }
         break;
       case PJSIP_CANCEL_METHOD:
         UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_CANCEL_METHOD" );
@@ -180,6 +175,7 @@ static pj_bool_t on_rx_response( pjsip_rx_data *p_psoRxData )
         break;
       case PJSIP_BYE_METHOD:
         UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_BYE_METHOD" );
+        send_resp( psoDialog, p_psoRxData, 200, NULL );
         break;
       case PJSIP_REGISTER_METHOD:
         UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_REGISTER_METHOD" );
@@ -192,6 +188,68 @@ static pj_bool_t on_rx_response( pjsip_rx_data *p_psoRxData )
         break;
       default:
         UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_UNDEFINED_METHOD" );
+    }
+  } else {
+    /* non Dialog message */
+    bRetVal = PJ_FALSE;
+  }
+
+  return bRetVal;
+}
+
+static pj_bool_t on_rx_response( pjsip_rx_data *p_psoRxData )
+{
+  pj_bool_t bRetVal = PJ_FALSE;
+  pjsip_dialog *psoDialog;
+  pjsip_method_e eSIPMethod;
+  int iStatusCode;
+
+  psoDialog = pjsip_rdata_get_dlg( p_psoRxData );
+  if ( NULL != psoDialog ) {
+    pjsip_transaction *psoTrans = pjsip_rdata_get_tsx( p_psoRxData );
+
+    if ( NULL != psoTrans ) {
+      eSIPMethod = psoTrans->method.id;
+      iStatusCode = psoTrans->status_code;
+    } else {
+      eSIPMethod = p_psoRxData->msg_info.cseq->method.id;
+      iStatusCode = p_psoRxData->msg_info.msg->line.status.code;
+    }
+    switch ( eSIPMethod ) {
+      case PJSIP_INVITE_METHOD:
+        UTL_LOG_D( g_coLog, "PJSIP_INVITE_METHOD: status: %d", iStatusCode );
+        if ( iStatusCode / 100 == 2 ) {
+          send_ack( psoDialog, p_psoRxData );
+          sync_ulck( &psoDialog->call_id->id, 0 );
+          send_bye( psoDialog, p_psoRxData );
+          bRetVal = PJ_TRUE;
+        } else if ( 401 == iStatusCode || 407 == iStatusCode ) {
+        } else if ( 300 <= iStatusCode ) {
+          pjsip_dlg_dec_session( psoDialog, &g_soModApp );
+          sync_ulck( &psoDialog->call_id->id, iStatusCode );
+        }
+        break;
+      case PJSIP_CANCEL_METHOD:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_CANCEL_METHOD: status: %d", iStatusCode );
+        break;
+      case PJSIP_ACK_METHOD:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_ACK_METHOD: status: %d", iStatusCode );
+        break;
+      case PJSIP_BYE_METHOD:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_BYE_METHOD: status: %d", iStatusCode );
+        sync_ulck( &psoDialog->call_id->id, 0 );
+        break;
+      case PJSIP_REGISTER_METHOD:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_REGISTER_METHOD: status: %d", iStatusCode );
+        break;
+      case PJSIP_OPTIONS_METHOD:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_OPTIONS_METHOD: status: %d", iStatusCode );
+        break;
+      case PJSIP_OTHER_METHOD:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_OTHER_METHOD: status: %d", iStatusCode );
+        break;
+      default:
+        UTL_LOG_D( g_coLog, "SIP METHOD: PJSIP_UNDEFINED_METHOD: status: %d", iStatusCode );
     }
   } else {
     /* non Dialog message */
@@ -477,6 +535,38 @@ static void send_ack( pjsip_dialog *p_psoDialog, pjsip_rx_data *p_psoRxData )
 
   tStatus = pjsip_dlg_send_request( p_psoDialog, psoTxData, -1, NULL );
   pj_assert( tStatus == PJ_SUCCESS );
+}
+
+static void send_bye( pjsip_dialog *p_psoDialog, pjsip_rx_data *p_psoRxData )
+{
+  pjsip_tx_data *psoTxData;
+  pj_status_t tStatus;
+
+  tStatus = pjsip_dlg_create_request( p_psoDialog, &pjsip_bye_method, p_psoRxData->msg_info.cseq->cseq, &psoTxData );
+  pj_assert( tStatus == PJ_SUCCESS );
+
+  tStatus = pjsip_dlg_send_request( p_psoDialog, psoTxData, -1, NULL );
+  pj_assert( tStatus == PJ_SUCCESS );
+}
+
+static void send_resp( pjsip_dialog *p_psoDialog, pjsip_rx_data *p_psoRxData, int p_iStatus, const char *p_pszStatus )
+{
+  pjsip_tx_data *psoTxData;
+  pj_status_t tStatus;
+  pj_str_t strStatus = pj_str( const_cast< char* >( p_pszStatus ) );
+  pjsip_transaction *psoTrans = pjsip_rdata_get_tsx( p_psoRxData );
+
+  tStatus = pjsip_endpt_create_response( g_psoEndPoint, p_psoRxData, 200, &strStatus, &psoTxData );
+  if ( PJ_SUCCESS == tStatus ) {
+  } else {
+    return;
+  }
+
+  tStatus = pjsip_endpt_send_response2( g_psoEndPoint, p_psoRxData, psoTxData, NULL, NULL );
+  if ( PJ_SUCCESS == tStatus ) {
+  } else {
+    return;
+  }
 }
 
 static void sync_init( pj_str_t *p_pstrCallId )
